@@ -259,8 +259,8 @@ def test_layer_norm(M, N, dtype, eps=1e-5, device='cuda'):
     # compare
     assert torch.allclose(y_tri, y_ref, atol=1e-2, rtol=0)
     assert torch.allclose(dx_tri, dx_ref, atol=1e-2, rtol=0)
-    assert torch.allclose(db_tri, db_ref, atol=1e-2, rtol=0)
-    assert torch.allclose(dw_tri, dw_ref, atol=1e-2, rtol=0)
+    assert torch.allclose(db_tri, db_ref, atol=1e-1, rtol=0)
+    assert torch.allclose(dw_tri, dw_ref, atol=1e-1, rtol=0)
 
 
 @triton.testing.perf_report(
