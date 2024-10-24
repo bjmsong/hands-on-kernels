@@ -61,7 +61,7 @@ def benchmark(M, N, K, provider):
     W = torch.randn((N, K), device='cuda', dtype=torch.float16)
     W_int8, state_W = quantize_rowwise(W)
     X_int8, state_X = quantize_rowwise(a)
-    W_int8_t = W_int8.t().contiguous()
+    W_int8_t = W_int8.t()
     W_t = W.t()
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch':
