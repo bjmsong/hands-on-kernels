@@ -1,3 +1,4 @@
+import time
 import torch
 import triton
 import triton.language as tl
@@ -61,9 +62,9 @@ def get_configs_io_bound():
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 32, "BLOCK_K": 64, "SPLIT_K": 1}, num_stages=5, num_warps=2),
         *get_configs_io_bound(),
     ],
-    key=["M", "N", "K"],
+    key=["M", "N", "K"],  # a list of argument names whose change in value will trigger the evaluation of all provided configs
     # a dict of functions that are used to prune configs
-    prune_configs_by={"early_config_prune": early_config_prune, "perf_model": estimate_matmul_time, "top_k": 10},
+    prune_configs_by={"early_config_prune": early_config_prune, "perf_model": estimate_matmul_time, "top_k": 20},
 )
 @triton.heuristics(
     {
@@ -169,11 +170,12 @@ def int8_matmul_rowwise_dequantize(a, b, state_x, state_w, bias):
     M, K = a.shape
     _, N = b.shape
     # allocates output
-    c = torch.empty((M, N), device=device, dtype=torch.bfloat16)
+    c = torch.empty((M, N), device=device, dtype=torch.float16)
     # accumulator types
-    ACC_TYPE = tl.float32  # if a.dtype in [torch.float16, torch.bfloat16, torch.float32] else tl.int32
+    ACC_TYPE = tl.int32  # if a.dtype in [torch.float16, torch.bfloat16, torch.float32] else tl.int32
     # launch int8_matmul_rowwise_dequantize kernel
     grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(N, META["BLOCK_N"]), META["SPLIT_K"])
+    # start_time = time.time()
     _int8_matmul_rowwise_dequantize[grid](
         a,
         b,
@@ -195,6 +197,9 @@ def int8_matmul_rowwise_dequantize(a, b, state_x, state_w, bias):
         GROUP_M=8,
         ACC_TYPE=ACC_TYPE,
     )
+    # end_time = time.time()
+    # elapsed_time = end_time - start_time
+    # print(f"Kernel cost: {elapsed_time} 秒")
     return c
 
 
