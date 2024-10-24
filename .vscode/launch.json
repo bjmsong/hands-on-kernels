@@ -40,8 +40,9 @@
             "python": "/root/miniconda3/bin/python",
             "name": "Python: 当前文件",
             "type": "python",
+            "cwd": "${workspaceFolder}/gemm/quantization/triton",
             "request": "launch",
-            "program": "gpu/triton_imp/w8a16.py",
+            "program": "w8a8/w8a8.py",
             "console": "integratedTerminal",
             "justMyCode": false,
             "args": [

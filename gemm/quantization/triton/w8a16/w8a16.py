@@ -172,12 +172,10 @@ if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
 else:
     print("❌ Triton and Torch differ")
 
-
-# result = triton.testing.do_bench(lambda: int8_weight_only_linear(x, w_int8.t(), scale), quantiles=[0.5, 0.2, 0.8])[0]
-# print(result)  
-
 M_range = [2 ** i for i in range(0, 15, 2)]
 N_K_range = [2 ** i for i in range(10, 15, 2)]
+M_range = [4096,8192,16384]
+N_K_range = [16384]
 matrix_range = list(itertools.product(M_range, N_K_range, N_K_range))
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -198,12 +196,14 @@ def benchmark(M, N, K, provider):
     a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
     W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
     W_int8, scale = quantize_rowwise(W)
+    W_int8_t = W_int8.t()
+    W_t = W.t()
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch':
         # 对每个kernel进行25次的warm_up和100次iteration
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(a, W.t()), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(a, W_t), quantiles=quantiles)
     if provider == 'triton':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: int8_weight_only_linear(a, W_int8.t(), scale), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: int8_weight_only_linear(a, W_int8_t, scale), quantiles=quantiles)
     perf = lambda ms: 2 * M * N * K * 1e-9 / ms
     return perf(ms), perf(max_ms), perf(min_ms)
 
