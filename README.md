@@ -11,6 +11,6 @@
 
 <p align="center"><img src=benchmark/gemm.png></p>
 
-<p align="center"><img src=benchmark/layernorm_backward.png></p>
-
 <p align="center"><img src=benchmark/w8a8.png></p>
+
+<p align="center"><img src=benchmark/layernorm_backward.png></p>
