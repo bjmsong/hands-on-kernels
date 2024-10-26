@@ -74,17 +74,19 @@ def benchmark(M, N, K, provider):
 
 benchmark.run(show_plots=True, print_data=True, save_path="plot/")
 
+
 ## calculate diff
 eps = 1e-3
 for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
-    a = torch.randn((M, K), device='cuda', dtype=torch.float16)
-    W = torch.randn((N, K), device='cuda', dtype=torch.float16)
+    a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
+    W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
     W_int8, state_W = quantize_rowwise(W)
     X_int8, state_X = quantize_rowwise(a)
     output_torch = torch.matmul(a, W.t())
     output_triton = matmul(X_int8, state_X,  W_int8.t(), state_W)
-    percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / (eps + torch.abs(output_torch))) * 100
-    print(f"diff(%) of {M,N,K} is {percentage_error.mean()}")
+    denominator = eps + torch.abs(output_torch) if torch.abs(output_torch).min() == 0 else torch.abs(output_torch)
+    percentage_error = (torch.abs(output_torch - output_triton)/ denominator) * 100
+    print(f"diff(%) of {M,N,K} is {percentage_error.median()}")
 
 ## peak memory
 # for M, N, K in itertools.product(M_range, N_K_range, N_K_range):

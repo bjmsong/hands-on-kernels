@@ -321,7 +321,16 @@ for N in N_range:
     x = -2.3 + 0.5 * torch.randn(x_shape, dtype=torch.float16, device='cuda')
     dy = .1 * torch.randn_like(x)
     x.requires_grad_(True)
-    output_torch = torch.nn.functional.layer_norm(x, w_shape, weight, bias, eps)
-    output_triton = layer_norm(x, weight, bias, eps)
-    percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / (eps + torch.abs(output_torch))) * 100
-    print(f"diff(%) of {M,N} is {percentage_error.mean()}")
+    # forward pass
+    y_tri = layer_norm(x, weight, bias, eps)
+    y_ref = torch.nn.functional.layer_norm(x, w_shape, weight, bias, eps).to(torch.float16)
+    # backward pass (triton)
+    y_tri.backward(dy, retain_graph=True)
+    dx_tri, dw_tri, db_tri = [_.grad.clone() for _ in [x, weight, bias]]
+    x.grad, weight.grad, bias.grad = None, None, None
+    # backward pass (torch)
+    y_ref.backward(dy, retain_graph=True)
+    dx_ref, dw_ref, db_ref = [_.grad.clone() for _ in [x, weight, bias]]
+    denominator = eps + torch.abs(dx_ref) if torch.abs(dx_ref).min() == 0 else torch.abs(dx_ref)
+    percentage_error = (torch.abs(dx_tri - dx_ref) / denominator) * 100
+    print(f"diff(%) of {M,N} is {percentage_error.median()}")

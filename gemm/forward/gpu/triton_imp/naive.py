@@ -185,5 +185,6 @@ for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
     b = torch.randn((K, N), device='cuda', dtype=torch.float16)
     output_torch = torch.matmul(a, b)
     output_triton = matmul(a, b)
-    percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / (eps + torch.abs(output_torch))) * 100
-    print(f"diff(%) of {M,N,K} is {percentage_error.mean()}")
+    denominator = eps + torch.abs(output_torch) if torch.abs(output_torch).min() == 0 else torch.abs(output_torch)
+    percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / denominator) * 100
+    print(f"diff(%) of {M,N,K} is {percentage_error.median()}")

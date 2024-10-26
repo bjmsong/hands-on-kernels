@@ -217,5 +217,6 @@ for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
     W_int8, state_W = quantize_rowwise(W)
     output_torch = torch.matmul(a, W.t())
     output_triton = int8_weight_only_linear(a, W_int8.t(), state_W)
-    percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / (eps + torch.abs(output_torch))) * 100
-    print(f"diff(%) of {M,N,K} is {percentage_error.mean()}")
+    denominator = eps + torch.abs(output_torch) if torch.abs(output_torch).min() == 0 else torch.abs(output_torch)
+    percentage_error = (torch.abs(output_torch - output_triton) / denominator) * 100
+    print(f"diff(%) of {M,N,K} is {percentage_error.median()}")
