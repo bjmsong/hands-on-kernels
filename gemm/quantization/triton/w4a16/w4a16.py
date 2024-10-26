@@ -223,3 +223,17 @@ if __name__ == '__main__':
         return perf(ms), perf(max_ms), perf(min_ms)
 
     benchmark.run(show_plots=True, print_data=True, save_path="plot/")
+
+
+## calculate diff
+for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
+    print(M,N,K)
+    a = torch.randn((M, K), device='cuda', dtype=torch.float16)
+    W = torch.randn((N, K), device='cuda', dtype=torch.float16)
+    W_int8, state_W = quantize_rowwise(W)
+    W_int8_t = W_int8.t()
+    W_t = W.t()
+    output_torch = torch.matmul(a, W_t)
+    # output_triton = matmul(X_int8, state_X,  W_int8_t, state_W)
+    percentage_error = (torch.abs(output_torch - output_triton) / torch.abs(output_torch)) * 100
+    print("diff(%):", percentage_error.mean())

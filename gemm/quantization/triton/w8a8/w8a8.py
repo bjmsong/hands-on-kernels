@@ -38,8 +38,8 @@ else:
 
 M_range = [2 ** i for i in range(10, 15, 2)]
 N_K_range = [2 ** i for i in range(10, 15, 2)]
-# M_range = [4096,8192,16384]
-# N_K_range = [16384]
+M_range = [4096,8192,16384]
+N_K_range = [16384]
 matrix_range = list(itertools.product(M_range, N_K_range, N_K_range))
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -74,12 +74,7 @@ def benchmark(M, N, K, provider):
 
 benchmark.run(show_plots=True, print_data=True, save_path="plot/")
 
-
-## peak memory
-M_range = [2 ** i for i in range(10, 15, 2)]
-N_K_range = [2 ** i for i in range(10, 15, 2)]
-M_range = [4096,8192,16384]
-N_K_range = [16384]
+## calculate diff
 for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
     print(M,N,K)
     a = torch.randn((M, K), device='cuda', dtype=torch.float16)
@@ -88,10 +83,24 @@ for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
     X_int8, state_X = quantize_rowwise(a)
     W_int8_t = W_int8.t()
     W_t = W.t()
-    QUANTILES = [0.5, 0.2, 0.8]
-    def torch_call():
-        torch.matmul(a,W_t)
-    def triton_call():
-        matmul(X_int8, state_X,  W_int8_t, state_W)
-    mem_50, mem_20, mem_80 = _test_memory(triton_call, quantiles=QUANTILES)
-    print(mem_50, mem_20, mem_80)
+    output_torch = torch.matmul(a,W_t)
+    output_triton = matmul(X_int8, state_X,  W_int8_t, state_W)
+    percentage_error = (torch.abs(output_torch - output_triton) / torch.abs(output_torch)) * 100
+    print("diff(%):", percentage_error.mean())
+
+## peak memory
+# for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
+#     print(M,N,K)
+#     a = torch.randn((M, K), device='cuda', dtype=torch.float16)
+#     W = torch.randn((N, K), device='cuda', dtype=torch.float16)
+#     W_int8, state_W = quantize_rowwise(W)
+#     X_int8, state_X = quantize_rowwise(a)
+#     W_int8_t = W_int8.t()
+#     W_t = W.t()
+#     QUANTILES = [0.5, 0.2, 0.8]
+#     def torch_call():
+#         torch.matmul(a,W_t)
+#     def triton_call():
+#         matmul(X_int8, state_X,  W_int8_t, state_W)
+#     mem_50, mem_20, mem_80 = _test_memory(triton_call, quantiles=QUANTILES)
+#     print(mem_50, mem_20, mem_80)
