@@ -309,3 +309,19 @@ def bench_layer_norm(M, N, dtype, provider, mode='backward', eps=1e-5, device='c
 
 test_layer_norm(1151, 8192, torch.float16)
 bench_layer_norm.run(save_path='.', print_data=True)
+
+eps = 1e-3
+M = 4096
+N_range = [512 * i for i in range(2, 32)]
+for N in N_range:
+    x_shape = (M, N)
+    w_shape = (x_shape[-1], )
+    weight = torch.rand(w_shape, dtype=torch.float16, device='cuda', requires_grad=True)
+    bias = torch.rand(w_shape, dtype=torch.float16, device='cuda', requires_grad=True)
+    x = -2.3 + 0.5 * torch.randn(x_shape, dtype=torch.float16, device='cuda')
+    dy = .1 * torch.randn_like(x)
+    x.requires_grad_(True)
+    output_torch = torch.nn.functional.layer_norm(x, w_shape, weight, bias, eps)
+    output_triton = layer_norm(x, weight, bias, eps)
+    percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / (eps + torch.abs(output_torch))) * 100
+    print(f"diff(%) of {M,N} is {percentage_error.mean()}")

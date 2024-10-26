@@ -179,11 +179,11 @@ def benchmark(M, N, K, provider):
 benchmark.run(show_plots=True, print_data=True, save_path="plot/")
 
 ## calculate diff
+eps = 1e-3
 for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
-    print(M,N,K)
     a = torch.randn((M, K), device='cuda', dtype=torch.float16)
     b = torch.randn((K, N), device='cuda', dtype=torch.float16)
     output_torch = torch.matmul(a, b)
     output_triton = matmul(a, b)
-    percentage_error = (torch.abs(output_torch - output_triton) / torch.abs(output_torch)) * 100
-    print("diff(%):", percentage_error.mean())
+    percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / (eps + torch.abs(output_torch))) * 100
+    print(f"diff(%) of {M,N,K} is {percentage_error.mean()}")

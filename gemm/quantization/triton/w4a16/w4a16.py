@@ -226,14 +226,15 @@ if __name__ == '__main__':
 
 
 ## calculate diff
+eps = 1e-3
 for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
-    print(M,N,K)
-    a = torch.randn((M, K), device='cuda', dtype=torch.float16)
-    W = torch.randn((N, K), device='cuda', dtype=torch.float16)
-    W_int8, state_W = quantize_rowwise(W)
-    W_int8_t = W_int8.t()
-    W_t = W.t()
-    output_torch = torch.matmul(a, W_t)
-    # output_triton = matmul(X_int8, state_X,  W_int8_t, state_W)
-    percentage_error = (torch.abs(output_torch - output_triton) / torch.abs(output_torch)) * 100
-    print("diff(%):", percentage_error.mean())
+    x = make_tensor(M, K, dtype=torch.float16)
+    w = make_tensor(K//8, N, dtype=torch.int32)
+    groupsize = 1
+    g = K // groupsize
+    zeros = make_tensor(g, N//8, torch.int32)
+    scales = make_tensor(g, N, torch.float16)
+    output_torch = torch.matmul(x, w.t())
+    output_triton = matmul_split_k(x, w, scales, zeros)
+    percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / (eps + torch.abs(output_torch))) * 100
+    print(f"diff(%) of {M,N,K} is {percentage_error.mean()}")

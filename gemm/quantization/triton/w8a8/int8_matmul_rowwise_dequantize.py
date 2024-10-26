@@ -170,7 +170,7 @@ def int8_matmul_rowwise_dequantize(a, b, state_x, state_w, bias):
     M, K = a.shape
     _, N = b.shape
     # allocates output
-    c = torch.empty((M, N), device=device, dtype=torch.float16)
+    c = torch.empty((M, N), device=device, dtype=torch.bfloat16)
     # accumulator types
     ACC_TYPE = tl.int32  # if a.dtype in [torch.float16, torch.bfloat16, torch.float32] else tl.int32
     # launch int8_matmul_rowwise_dequantize kernel
