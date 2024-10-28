@@ -14,32 +14,33 @@ def matmul(X_int8, state_X, W_int8, state_W):
 
     return int8_matmul_rowwise_dequantize(X_int8, W_int8, state_X, state_W, bias = None)
 
-torch.manual_seed(0)
-M, K, N = 16384, 4096, 8192
-a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
-W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
-# a = torch.tensor([[0.1,0.2],[0.3,0.4]], device='cuda', dtype=torch.float16)
-# b = torch.tensor([[0.1,0.3],[0.2,0.4]], device='cuda', dtype=torch.float16)
-W_int8, state_W = quantize_rowwise(W)  # quantization before inference
-W_int8_t = W_int8.t()
-X_int8, state_X = quantize_rowwise(a)  # fused in former kernel
-start_time = time.time()
-triton_output = matmul(X_int8, state_X, W_int8_t, state_W)
-end_time = time.time()
-elapsed_time = end_time - start_time
-print(f"All cost: {elapsed_time} 秒")
-torch_output = torch.matmul(a, W.t())
-print(f"triton_output={triton_output}")
-print(f"torch_output={torch_output}")
-if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
-    print("✅ Triton and Torch match")
-else:
-    print("❌ Triton and Torch differ")
+def test_correctness():
+    torch.manual_seed(0)
+    M, K, N = 16384, 4096, 8192
+    a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
+    W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
+    # a = torch.tensor([[0.1,0.2],[0.3,0.4]], device='cuda', dtype=torch.float16)
+    # b = torch.tensor([[0.1,0.3],[0.2,0.4]], device='cuda', dtype=torch.float16)
+    W_int8, state_W = quantize_rowwise(W)  # quantization before inference
+    W_int8_t = W_int8.t()
+    X_int8, state_X = quantize_rowwise(a)  # fused in former kernel
+    start_time = time.time()
+    triton_output = matmul(X_int8, state_X, W_int8_t, state_W)
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"All cost: {elapsed_time} 秒")
+    torch_output = torch.matmul(a, W.t())
+    print(f"triton_output={triton_output}")
+    print(f"torch_output={torch_output}")
+    if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
+        print("✅ Triton and Torch match")
+    else:
+        print("❌ Triton and Torch differ")
 
-M_range = [2 ** i for i in range(10, 15, 2)]
+test_correctness()
+
+M_range = [2 ** i for i in range(0, 15, 2)]
 N_K_range = [2 ** i for i in range(10, 15, 2)]
-# M_range = [4096]
-# N_K_range = [1024, 16384]
 matrix_range = list(itertools.product(M_range, N_K_range, N_K_range))
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -72,39 +73,49 @@ def benchmark(M, N, K, provider):
     perf = lambda ms: 2 * M * N * K * 1e-9 / ms
     return perf(ms), perf(max_ms), perf(min_ms)
 
-benchmark.run(show_plots=True, print_data=True, save_path="plot/")
+# benchmark.run(show_plots=True, print_data=True, save_path="plot/")
 
 
 ## calculate diff
-eps = 1e-3
-for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
-    a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
-    W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
-    W_int8, state_W = quantize_rowwise(W)
-    X_int8, state_X = quantize_rowwise(a)
-    output_torch = torch.matmul(a, W.t())
-    output_triton = matmul(X_int8, state_X,  W_int8.t(), state_W)
-    denominator = eps + torch.abs(output_torch) if torch.abs(output_torch).min() == 0 else torch.abs(output_torch)
-    percentage_error = (torch.abs(output_torch - output_triton)/ denominator) * 100
-    print(f"diff(%) of {M,N,K} is {percentage_error.median()}")
-
-## peak memory
-for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
-    QUANTILES = [0.5, 0.2, 0.8]
-    def torch_call():
+def calculate_diff():
+    eps = 1e-3
+    for M, N, K in matrix_range:
         a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
         W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
-        torch.matmul(a,W.t())
-
-    W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
-    def triton_call():
-        a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
         W_int8, state_W = quantize_rowwise(W)
         X_int8, state_X = quantize_rowwise(a)
-        matmul(X_int8, state_X,  W_int8.t(), state_W)
+        output_torch = torch.matmul(a, W.t())
+        output_triton = matmul(X_int8, state_X,  W_int8.t(), state_W)
+        denominator = eps + torch.abs(output_torch) if torch.abs(output_torch).min() == 0 else torch.abs(output_torch)
+        percentage_error = (torch.abs(output_torch - output_triton)/ denominator) * 100
+        print(f"diff(%) of {M,N,K} is {percentage_error.median()}")
 
-    mem_50, mem_20, mem_80 = _test_memory(triton_call, quantiles=QUANTILES)
-    print(f"Triton Peak Memory of {M,N,K} is {mem_50, mem_20, mem_80}")
+# calculate_diff()
 
-    mem_50, mem_20, mem_80 = _test_memory(torch_call, quantiles=QUANTILES)
-    print(f"Torch Peak Memory of {M,N,K} is {mem_50, mem_20, mem_80}")
+# M_range = [16384]
+# N_K_range = [4096, 16384]
+## peak memory
+def peak_memory(backend):
+    for M, N, K in matrix_range:
+        def torch_call():
+            a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
+            W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
+            torch.matmul(a,W.t())
+
+        def triton_call():
+            W_int8 = torch.empty((N, K), device="cuda", dtype=torch.int8)
+            state_W = torch.empty(N, device="cuda", dtype=torch.bfloat16)
+            X_int8 = torch.empty((M, K), device="cuda", dtype=torch.int8)
+            state_X = torch.empty(M, device="cuda", dtype=torch.bfloat16)
+            matmul(X_int8, state_X,  W_int8.t(), state_W)
+
+        QUANTILES = [0.5, 0.2, 0.8]
+        if backend == "triton":
+            mem_50, mem_20, mem_80 = _test_memory(triton_call, quantiles=QUANTILES)
+            print(f"Triton Peak Memory of {M,N,K} is {mem_50, mem_20, mem_80}")
+
+        if backend == "torch":
+            mem_50, mem_20, mem_80 = _test_memory(torch_call, quantiles=QUANTILES)
+            print(f"Torch Peak Memory of {M,N,K} is {mem_50, mem_20, mem_80}")
+
+# peak_memory(backend="triton")

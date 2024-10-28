@@ -4,6 +4,10 @@ import triton
 from triton import language as tl
 # from quantize import quantize
 
+M_range = [2 ** i for i in range(0, 15, 2)]
+N_K_range = [2 ** i for i in range(10, 15, 2)]
+matrix_range = list(itertools.product(M_range, N_K_range, N_K_range))
+
 @triton.jit()
 def swizzle_tile(pid,
                 m, n,
@@ -155,6 +159,47 @@ def make_tensor(M, N, dtype):
         res.normal_(mean=0.0, std=0.5)
     return res
 
+def calculate_diff():
+    eps = 1e-3
+    for M, N, K in matrix_range:
+        x = make_tensor(M, K, dtype=torch.float16)
+        w = make_tensor(K//8, N, dtype=torch.int32)
+        groupsize = 1
+        g = K // groupsize
+        zeros = make_tensor(g, N//8, torch.int32)
+        scales = make_tensor(g, N, torch.float16)
+        output_torch = torch.matmul(x, w.t())
+        output_triton = matmul_split_k(x, w, scales, zeros)
+        percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / (eps + torch.abs(output_torch))) * 100
+        print(f"diff(%) of {M,N,K} is {percentage_error.mean()}")
+
+@triton.testing.perf_report(
+    triton.testing.Benchmark(
+        x_names=['M', 'N', 'K'],  # Argument names to use as an x-axis for the plot
+        x_vals=[list(_) for _ in matrix_range],  # Different possible values for `x_name`
+        line_arg='provider',  # Argument name whose value corresponds to a different line in the plot
+        # Possible values for `line_arg`
+        line_vals=['triton'],
+        # Label name for the lines
+        line_names=["Triton"],
+        # Line styles
+        styles=[('green', '-')],
+        ylabel="TFLOPS",  # Label name for the y-axis
+        plot_name="matmul-performance",  # Name for the plot, used also as a file name for saving the plot.
+        args={},
+    ))
+def benchmark(M, N, K, provider):
+    x = make_tensor(M, K, dtype=torch.float16)
+    w = make_tensor(K//8, N, dtype=torch.int32)
+    groupsize = 1
+    g = K // groupsize
+    zeros = make_tensor(g, N//8, torch.int32)
+    scales = make_tensor(g, N, torch.float16)
+    quantiles = [0.5, 0.2, 0.8]
+    if provider == 'triton':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul_split_k(x, w, scales, zeros), quantiles=quantiles)
+    perf = lambda ms: 2 * M * N * K * 1e-9 / ms
+    return perf(ms), perf(max_ms), perf(min_ms)
 
 if __name__ == '__main__':
 
@@ -190,51 +235,6 @@ if __name__ == '__main__':
     # else:
     #     print("❌ Triton and Torch differ")
 
-
-    M_range = [2 ** i for i in range(0, 15, 2)]
-    N_K_range = [2 ** i for i in range(10, 15, 2)]
-    matrix_range = list(itertools.product(M_range, N_K_range, N_K_range))
-    @triton.testing.perf_report(
-        triton.testing.Benchmark(
-            x_names=['M', 'N', 'K'],  # Argument names to use as an x-axis for the plot
-            x_vals=[list(_) for _ in matrix_range],  # Different possible values for `x_name`
-            line_arg='provider',  # Argument name whose value corresponds to a different line in the plot
-            # Possible values for `line_arg`
-            line_vals=['triton'],
-            # Label name for the lines
-            line_names=["Triton"],
-            # Line styles
-            styles=[('green', '-')],
-            ylabel="TFLOPS",  # Label name for the y-axis
-            plot_name="matmul-performance",  # Name for the plot, used also as a file name for saving the plot.
-            args={},
-        ))
-    def benchmark(M, N, K, provider):
-        x = make_tensor(M, K, dtype=torch.float16)
-        w = make_tensor(K//8, N, dtype=torch.int32)
-        groupsize = 1
-        g = K // groupsize
-        zeros = make_tensor(g, N//8, torch.int32)
-        scales = make_tensor(g, N, torch.float16)
-        quantiles = [0.5, 0.2, 0.8]
-        if provider == 'triton':
-            ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul_split_k(x, w, scales, zeros), quantiles=quantiles)
-        perf = lambda ms: 2 * M * N * K * 1e-9 / ms
-        return perf(ms), perf(max_ms), perf(min_ms)
-
     benchmark.run(show_plots=True, print_data=True, save_path="plot/")
 
-
-## calculate diff
-eps = 1e-3
-for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
-    x = make_tensor(M, K, dtype=torch.float16)
-    w = make_tensor(K//8, N, dtype=torch.int32)
-    groupsize = 1
-    g = K // groupsize
-    zeros = make_tensor(g, N//8, torch.int32)
-    scales = make_tensor(g, N, torch.float16)
-    output_torch = torch.matmul(x, w.t())
-    output_triton = matmul_split_k(x, w, scales, zeros)
-    percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / (eps + torch.abs(output_torch))) * 100
-    print(f"diff(%) of {M,N,K} is {percentage_error.mean()}")
+    calculate_diff()

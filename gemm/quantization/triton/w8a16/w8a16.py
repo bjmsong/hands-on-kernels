@@ -7,7 +7,7 @@ import sys
 sys.path.append(".")
 from utils.quantize_rowwise import quantize_rowwise
 from utils.dequantize_rowwise import dequantize_rowwise
-
+from utils.utils import _test_memory
 
 def get_configs_io_bound():
     configs = []
@@ -156,21 +156,24 @@ def int8_weight_only_linear(x, w, s):
     )
     return output
 
-torch.manual_seed(0)
-M, K, N = 32, 256, 1024
-x = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
-w = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
+def test_correctness():
+    torch.manual_seed(0)
+    M, K, N = 32, 256, 1024
+    x = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
+    w = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
 
-w_int8, scale = quantize_rowwise(w)   # preprocess
+    w_int8, scale = quantize_rowwise(w)   # preprocess
 
-triton_output = int8_weight_only_linear(x, w_int8.t(), scale)
-torch_output = torch.matmul(x, w.t())
-print(f"triton_output={triton_output}")
-print(f"torch_output={torch_output}")
-if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
-    print("✅ Triton and Torch match")
-else:
-    print("❌ Triton and Torch differ")
+    triton_output = int8_weight_only_linear(x, w_int8.t(), scale)
+    torch_output = torch.matmul(x, w.t())
+    print(f"triton_output={triton_output}")
+    print(f"torch_output={torch_output}")
+    if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
+        print("✅ Triton and Torch match")
+    else:
+        print("❌ Triton and Torch differ")
+
+# test_correctness()
 
 M_range = [2 ** i for i in range(0, 15, 2)]
 N_K_range = [2 ** i for i in range(10, 15, 2)]
@@ -207,16 +210,43 @@ def benchmark(M, N, K, provider):
     perf = lambda ms: 2 * M * N * K * 1e-9 / ms
     return perf(ms), perf(max_ms), perf(min_ms)
 
-benchmark.run(show_plots=True, print_data=True, save_path="plot/")
+# benchmark.run(show_plots=True, print_data=True, save_path="plot/")
 
 ## calculate diff
-eps = 1e-3
-for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
-    a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
-    W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
-    W_int8, state_W = quantize_rowwise(W)
-    output_torch = torch.matmul(a, W.t())
-    output_triton = int8_weight_only_linear(a, W_int8.t(), state_W)
-    denominator = eps + torch.abs(output_torch) if torch.abs(output_torch).min() == 0 else torch.abs(output_torch)
-    percentage_error = (torch.abs(output_torch - output_triton) / denominator) * 100
-    print(f"diff(%) of {M,N,K} is {percentage_error.median()}")
+def calculate_diff():
+    eps = 1e-3
+    for M, N, K in matrix_range:
+        a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
+        W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
+        W_int8, state_W = quantize_rowwise(W)
+        output_torch = torch.matmul(a, W.t())
+        output_triton = int8_weight_only_linear(a, W_int8.t(), state_W)
+        denominator = eps + torch.abs(output_torch) if torch.abs(output_torch).min() == 0 else torch.abs(output_torch)
+        percentage_error = (torch.abs(output_torch - output_triton) / denominator) * 100
+        print(f"diff(%) of {M,N,K} is {percentage_error.median()}")
+
+# calculate_diff()
+
+def peak_memory(backend):
+    for M, N, K in matrix_range:
+        def torch_call():
+            a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
+            W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
+            torch.matmul(a,W.t())
+
+        def triton_call():
+            W_int8 = torch.empty((N, K), device="cuda", dtype=torch.int8)
+            state_W = torch.empty(N, device="cuda", dtype=torch.bfloat16)
+            a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
+            int8_weight_only_linear(a, W_int8.t(), state_W)
+
+        QUANTILES = [0.5, 0.2, 0.8]
+        if backend == "triton":
+            mem_50, mem_20, mem_80 = _test_memory(triton_call, quantiles=QUANTILES)
+            print(f"Triton Peak Memory of {M,N,K} is {mem_50, mem_20, mem_80}")
+
+        if backend == "torch":
+            mem_50, mem_20, mem_80 = _test_memory(torch_call, quantiles=QUANTILES)
+            print(f"Torch Peak Memory of {M,N,K} is {mem_50, mem_20, mem_80}")
+
+# peak_memory(backend = "triton")

@@ -11,6 +11,7 @@ def _test_memory(
     total_mem = []
 
     for _ in range(_iter):
+        # mem_allocated = torch.cuda.memory_allocated() / 2**20
         torch.cuda.memory.reset_peak_memory_stats()
         func()
         # Convert to MB
