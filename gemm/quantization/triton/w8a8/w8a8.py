@@ -89,18 +89,22 @@ for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
     print(f"diff(%) of {M,N,K} is {percentage_error.median()}")
 
 ## peak memory
-# for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
-#     print(M,N,K)
-#     a = torch.randn((M, K), device='cuda', dtype=torch.float16)
-#     W = torch.randn((N, K), device='cuda', dtype=torch.float16)
-#     W_int8, state_W = quantize_rowwise(W)
-#     X_int8, state_X = quantize_rowwise(a)
-#     W_int8_t = W_int8.t()
-#     W_t = W.t()
-#     QUANTILES = [0.5, 0.2, 0.8]
-#     def torch_call():
-#         torch.matmul(a,W_t)
-#     def triton_call():
-#         matmul(X_int8, state_X,  W_int8_t, state_W)
-#     mem_50, mem_20, mem_80 = _test_memory(triton_call, quantiles=QUANTILES)
-#     print(mem_50, mem_20, mem_80)
+for M, N, K in itertools.product(M_range, N_K_range, N_K_range):
+    QUANTILES = [0.5, 0.2, 0.8]
+    def torch_call():
+        a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
+        W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
+        torch.matmul(a,W.t())
+
+    W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
+    def triton_call():
+        a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
+        W_int8, state_W = quantize_rowwise(W)
+        X_int8, state_X = quantize_rowwise(a)
+        matmul(X_int8, state_X,  W_int8.t(), state_W)
+
+    mem_50, mem_20, mem_80 = _test_memory(triton_call, quantiles=QUANTILES)
+    print(f"Triton Peak Memory of {M,N,K} is {mem_50, mem_20, mem_80}")
+
+    mem_50, mem_20, mem_80 = _test_memory(torch_call, quantiles=QUANTILES)
+    print(f"Torch Peak Memory of {M,N,K} is {mem_50, mem_20, mem_80}")
