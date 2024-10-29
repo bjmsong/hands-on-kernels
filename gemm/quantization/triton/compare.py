@@ -337,16 +337,17 @@ for D in [2**6, 2**7, 2**8, 2**9, 2**10, 2**11]: #, 2**10, 2**12, 2**14]:
             torch.cuda.synchronize()
             torch._dynamo.reset()
 
-            # print("alt wo mm")
-            # def alt_wo_mm(x, w_int8, bias, scale):
-            #     return (x.unsqueeze(-1) * w_int8.unsqueeze(0)).sum(dim=1)*scale+bias
-            #     # return torch.mm(x, w_int8)*scale+bias
+            print("alt wo mm")
+            def alt_wo_mm(x, w_int8, bias, scale):
+                # return (x.unsqueeze(-1) * w_int8.unsqueeze(0)).sum(dim=1)*scale+bias
+                return torch.mm(x, w_int8)*scale+bias
 
-            # comp_fn=torch.compile(alt_wo_mm, mode='max-autotune')
-            # comp_fn(x, w_int8, bias, scale)
-            # comp_fn(x, w_int8, bias, scale)
-            # comp_fn(x, w_int8, bias, scale)
-            # result[D]["alt int8 linear"][(t_x, t_w)] = triton.testing.do_bench(lambda: comp_fn(x, w_int8, bias, scale), quantiles=quantiles)[0]
+            # python < 3.12
+            comp_fn=torch.compile(alt_wo_mm, mode='max-autotune')
+            comp_fn(x, w_int8, bias, scale)
+            comp_fn(x, w_int8, bias, scale)
+            comp_fn(x, w_int8, bias, scale)
+            result[D]["alt int8 linear"][(t_x, t_w)] = triton.testing.do_bench(lambda: comp_fn(x, w_int8, bias, scale), quantiles=quantiles)[0]
 
             print("int8 linear")
             try:

@@ -12,8 +12,7 @@ def alt_wo_mm(x, w_int8, scale):
     return torch.mm(x, w_int8.to(torch.bfloat16))*scale/127.0
 
 torch.manual_seed(0)
-M, K, N = 32, 1024, 1024
-# M, K, N = 16384, 16384, 16384
+M, K, N = 32, 256, 1024
 x = torch.randn((M, K), device = 'cuda', dtype=torch.bfloat16)
 w = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
 w_int8, scale = quantize_rowwise(w)
@@ -29,7 +28,7 @@ else:
     print("❌ Triton and Torch differ")
 
 
-M_range = [2 ** i for i in range(0, 15, 2)]
+M_range = [2 ** i for i in range(10, 15, 2)]
 N_K_range = [2 ** i for i in range(10, 15, 2)]
 matrix_range = list(itertools.product(M_range, N_K_range, N_K_range))
 @triton.testing.perf_report(
@@ -53,7 +52,6 @@ def benchmark(M, N, K, provider):
     W_int8, scale = quantize_rowwise(W)
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch':
-        # 对每个kernel进行25次的warm_up和100次iteration
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(a, W.t()), quantiles=quantiles)
     if provider == 'triton':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: comp_fn(a, W_int8.t(), scale), quantiles=quantiles)

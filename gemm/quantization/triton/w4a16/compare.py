@@ -1,11 +1,8 @@
+import itertools
 import torch
 import triton
 import triton.language as tl
 from triton import Config
-import sys
-sys.path.append(".")
-from utils.quantize_rowwise import quantize_rowwise
-from utils.dequantize_rowwise import dequantize_rowwise
 
 def get_configs_io_bound():
     configs = []
@@ -45,17 +42,17 @@ config_list = [
 
 @triton.autotune(
     configs = [
-        Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 16, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8}, num_stages=3, num_warps=1),
-        Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 16, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=1),
+        Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 16, 'BLOCK_SIZE_K': 256, 'GROUP_SIZE_M': 8}, num_stages=5, num_warps=2),
+        Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 16, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8}, num_stages=5, num_warps=2),
     ] + config_list,
     key=['M', 'N', 'K'],
 )
 @triton.jit
-def linear_kernel(
+def uint4x2_weight_only_linear_kernel(
     # Pointers to matrices
-    x_ptr, w_ptr, b_ptr, y_ptr,
+    x_ptr, w_ptr, b_ptr, s_ptr, y_ptr,
     # Matrix dimensions
-    M, N, K,
+    M, N, K, # x is Mx(K*2) and w is KxN
     # The stride variables represent how much to increase the ptr by when moving by 1
     # element in a particular dimension. E.g. `stride_am` is how much to increase `x_ptr`
     # by to get the element one row down (A has M rows).
@@ -95,13 +92,11 @@ def linear_kernel(
     offs_wn = tl.max_contiguous((pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N,BLOCK_SIZE_N)
     offs_k = tl.arange(0, BLOCK_SIZE_K)
     x_ptrs = x_ptr + (offs_xm[:, None] * stride_xm + offs_k[None, :] * stride_xk)
-    w_ptrs = w_ptr + (offs_k[:, None] * stride_wk + offs_wn[None, :] * stride_wn)
+    w_ptrs = w_ptr + (offs_k[:, None]//2 * stride_wk + offs_wn[None, :] * stride_wn)
+    w_shifts = (offs_k % 2) * 4     #  [0,1,2,3...] -> [0,4,0,4,0,4...]
     b_ptrs = b_ptr + (offs_wn * stride_b)
-    step_w = BLOCK_SIZE_K * stride_wk
+    step_w = BLOCK_SIZE_K//2 * stride_wk   # w方向步长减半
     step_x = BLOCK_SIZE_K * stride_xk
-
-    b = tl.load(b_ptrs)
-
     # -----------------------------------------------------------
     # Iterate to compute a block of the Y matrix.
     # We accumulate into a `[BLOCK_SIZE_M, BLOCK_SIZE_N]` block
@@ -113,13 +108,15 @@ def linear_kernel(
         # If it is out of bounds, set it to 0.
         x = tl.load(x_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
         w = tl.load(w_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
+        w = ((w >> w_shifts[:, None]) & 0xF) - 8  # 广播，右移, 取低4位，调整范围
         # We accumulate along the K dimension.
-        accumulator += tl.dot(x, w)
+        accumulator += tl.dot(x, w.to(tl.bfloat16))
         # Advance the ptrs to the next K block.
         x_ptrs += step_x
         w_ptrs += step_w
-
-    y = accumulator.to(tl.bfloat16) + b
+    s = tl.load(s_ptr)
+    b = tl.load(b_ptrs)
+    y = (accumulator.to(tl.bfloat16) * s) + b
 
     # -----------------------------------------------------------
     # Write back the block of the output matrix Y with masks.
@@ -129,48 +126,34 @@ def linear_kernel(
     y_mask = (offs_ym[:, None] < M) & (offs_yn[None, :] < N)
     tl.store(y_ptrs, y, mask=y_mask)
 
-def int8_weight_only_linear(x, w, b, s):
+def uint4x2_weight_only_linear(x, w, b, s):
     # Check constraints.
-    assert x.shape[1] == w.shape[0], "Incompatible dimensions"
+    assert x.shape[1] == w.shape[0]*2, "Incompatible dimensions"
     # assert x.is_contiguous(), "Matrix x must be contiguous"
     # assert w.is_contiguous(), "Matrix w must be contiguous"
     M, K = x.shape
-    K, N = w.shape
+    _, N = w.shape
     assert b.shape[0] == N
     # Allocates output.
-    output = torch.empty((M, N), device=x.device, dtype=x.dtype)
-    w_bf16 = dequantize_rowwise(w, s)
+    y = torch.empty((M, N), device=x.device, dtype=x.dtype)
     # 1D launch kernel where each block gets its own program.
     grid = lambda META: (
         triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),
     )
-    linear_kernel[grid](
-        x, w_bf16, b, output,
+    uint4x2_weight_only_linear_kernel[grid](
+        x, w, b, s, y,
         M, N, K,
         x.stride(0), x.stride(1),
         w.stride(0), w.stride(1),
         b.stride(0),
-        output.stride(0), output.stride(1),
+        y.stride(0), y.stride(1),
     )
-    return output
+    return y
 
 D = 2 ** 8
 N = D
-x = torch.randn(1,D).to('cuda').to(torch.bfloat16)
-w = torch.randn(D, N, dtype=torch.bfloat16).cuda()
-bias = torch.randn(N, dtype=torch.bfloat16).cuda()
-
-w_int8, scale = quantize_rowwise(w)   # preprocess
-
-triton_output = int8_weight_only_linear(x, w_int8, bias, scale)
-torch_output = torch.matmul(x, w) + bias
-print(f"triton_output={triton_output}")
-print(f"torch_output={torch_output}")
-if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
-    print("✅ Triton and Torch match")
-else:
-    print("❌ Triton and Torch differ")
-
-
-result = triton.testing.do_bench(lambda: int8_weight_only_linear(x, w_int8, bias, scale), quantiles=[0.5, 0.2, 0.8])[0]
-print(result)  
+x = torch.randn((D, D), device='cuda', dtype=torch.bfloat16)
+bias = torch.randn((D, N), device='cuda', dtype=torch.bfloat16)
+scale = torch.randn(N, device='cuda', dtype=torch.bfloat16)
+w_uint4x2 = torch.randint(0, 255, (D//2, N), device='cuda', dtype=torch.uint8)  # range: (0, 255)
+uint4x2_weight_only_linear(x, w_uint4x2, bias, scale)

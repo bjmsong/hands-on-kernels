@@ -1,4 +1,3 @@
-import itertools
 import torch
 import triton
 import triton.language as tl
@@ -7,7 +6,6 @@ import sys
 sys.path.append(".")
 from utils.quantize_rowwise import quantize_rowwise
 from utils.dequantize_rowwise import dequantize_rowwise
-from utils.utils import _test_memory
 
 def get_configs_io_bound():
     configs = []
@@ -53,9 +51,9 @@ config_list = [
     key=['M', 'N', 'K'],
 )
 @triton.jit
-def int8_weight_only_linear_kernel(
+def linear_kernel(
     # Pointers to matrices
-    x_ptr, w_ptr, s_ptr, y_ptr,
+    x_ptr, w_ptr, y_ptr,
     # Matrix dimensions
     M, N, K,
     # The stride variables represent how much to increase the ptr by when moving by 1
@@ -63,6 +61,7 @@ def int8_weight_only_linear_kernel(
     # by to get the element one row down (A has M rows).
     stride_xm, stride_xk,
     stride_wk, stride_wn,
+    stride_b,
     stride_ym, stride_yn,
     # Meta-parameters
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
@@ -97,8 +96,11 @@ def int8_weight_only_linear_kernel(
     offs_k = tl.arange(0, BLOCK_SIZE_K)
     x_ptrs = x_ptr + (offs_xm[:, None] * stride_xm + offs_k[None, :] * stride_xk)
     w_ptrs = w_ptr + (offs_k[:, None] * stride_wk + offs_wn[None, :] * stride_wn)
+    b_ptrs = b_ptr + (offs_wn * stride_b)
     step_w = BLOCK_SIZE_K * stride_wk
     step_x = BLOCK_SIZE_K * stride_xk
+
+    b = tl.load(b_ptrs)
 
     # -----------------------------------------------------------
     # Iterate to compute a block of the Y matrix.
@@ -112,13 +114,12 @@ def int8_weight_only_linear_kernel(
         x = tl.load(x_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
         w = tl.load(w_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
         # We accumulate along the K dimension.
-        accumulator += tl.dot(x, w.to(tl.bfloat16))
+        accumulator += tl.dot(x, w)
         # Advance the ptrs to the next K block.
         x_ptrs += step_x
         w_ptrs += step_w
 
-    s = tl.load(s_ptr + offs_wn)[None, :]
-    y = (s * (accumulator * (1.0 / 127.0))).to(tl.bfloat16)
+    y = accumulator.to(tl.bfloat16)
 
     # -----------------------------------------------------------
     # Write back the block of the output matrix Y with masks.
@@ -130,56 +131,49 @@ def int8_weight_only_linear_kernel(
 
 def int8_weight_only_linear(x, w, s):
     # Check constraints.
-    assert x.shape[1] == w.shape[0], "Incompatible dimensions"
-
-    M, K = x.shape
-    K, N = w.shape
-
-    if x.stride(0) > 1 and x.stride(1) > 1:
-        x = x.contiguous()
-    if w.stride(0) > 1 and w.stride(1) > 1:
-        w = w.contiguous()
+    assert x.shape[1] == w.shape[1], "Incompatible dimensions"
     # assert x.is_contiguous(), "Matrix x must be contiguous"
     # assert w.is_contiguous(), "Matrix w must be contiguous"
-
+    M, K = x.shape
+    N, K = w.shape
+    assert b.shape[0] == N
     # Allocates output.
     output = torch.empty((M, N), device=x.device, dtype=x.dtype)
+    w_bf16 = dequantize_rowwise(w, s)
     # 1D launch kernel where each block gets its own program.
     grid = lambda META: (
         triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),
     )
-    int8_weight_only_linear_kernel[grid](
-        x, w, s, output,
+    linear_kernel[grid](
+        x, w_bf16.t(), output,
         M, N, K,
         x.stride(0), x.stride(1),
         w.stride(0), w.stride(1),
+        b.stride(0),
         output.stride(0), output.stride(1),
     )
     return output
 
-def test_correctness():
-    torch.manual_seed(0)
-    M, K, N = 32, 256, 1024
-    x = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
-    w = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
+M, K, N = 32, 256, 1024
+x = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
+w = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
 
-    w_int8, scale = quantize_rowwise(w)   # preprocess
+w_int8, scale = quantize_rowwise(w)   # preprocess
 
-    triton_output = int8_weight_only_linear(x, w_int8.t(), scale)
-    torch_output = torch.matmul(x, w.t())
-    print(f"triton_output={triton_output}")
-    print(f"torch_output={torch_output}")
-    if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
-        print("✅ Triton and Torch match")
-    else:
-        print("❌ Triton and Torch differ")
+triton_output = int8_weight_only_linear(x, w_int8, scale)
+torch_output = torch.matmul(x, w)
+print(f"triton_output={triton_output}")
+print(f"torch_output={torch_output}")
+if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
+    print("✅ Triton and Torch match")
+else:
+    print("❌ Triton and Torch differ")
 
-test_correctness()
 
 M_range = [2 ** i for i in range(10, 15, 2)]
 N_K_range = [2 ** i for i in range(10, 15, 2)]
-M_range = [4096,8192,16384]
-N_K_range = [16384]
+# M_range = [4096,8192,16384]
+# N_K_range = [16384]
 matrix_range = list(itertools.product(M_range, N_K_range, N_K_range))
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -200,52 +194,27 @@ def benchmark(M, N, K, provider):
     a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
     W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
     W_int8, scale = quantize_rowwise(W)
-    W_int8_t = W_int8.t()
-    W_t = W.t()
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(a, W_t), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(a, W.t()), quantiles=quantiles)
     if provider == 'triton':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: int8_weight_only_linear(a, W_int8_t, scale), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: int8_weight_only_linear(x, w_int8, scale), quantiles=quantiles)
     perf = lambda ms: 2 * M * N * K * 1e-9 / ms
     return perf(ms), perf(max_ms), perf(min_ms)
 
 benchmark.run(show_plots=True, print_data=True, save_path="plot/")
+
 
 def calculate_diff():
     eps = 1e-3
     for M, N, K in matrix_range:
         a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
         W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
-        W_int8, state_W = quantize_rowwise(W)
+        W_int8, scale = quantize_rowwise(W)
         output_torch = torch.matmul(a, W.t())
-        output_triton = int8_weight_only_linear(a, W_int8.t(), state_W)
+        output_triton = int8_weight_only_linear(x, w_int8, scale)
         denominator = eps + torch.abs(output_torch) if torch.abs(output_torch).min() == 0 else torch.abs(output_torch)
         percentage_error = (torch.abs(output_torch - output_triton) / denominator) * 100
         print(f"diff(%) of {M,N,K} is {percentage_error.median()}")
 
 calculate_diff()
-
-def peak_memory(backend):
-    for M, N, K in matrix_range:
-        def torch_call():
-            a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
-            W = torch.randn((N, K), device='cuda', dtype=torch.bfloat16)
-            torch.matmul(a,W.t())
-
-        def triton_call():
-            W_int8 = torch.empty((N, K), device="cuda", dtype=torch.int8)
-            state_W = torch.empty(N, device="cuda", dtype=torch.bfloat16)
-            a = torch.randn((M, K), device='cuda', dtype=torch.bfloat16)
-            int8_weight_only_linear(a, W_int8.t(), state_W)
-
-        QUANTILES = [0.5, 0.2, 0.8]
-        if backend == "triton":
-            mem_50, mem_20, mem_80 = _test_memory(triton_call, quantiles=QUANTILES)
-            print(f"Triton Peak Memory of {M,N,K} is {mem_50, mem_20, mem_80}")
-
-        if backend == "torch":
-            mem_50, mem_20, mem_80 = _test_memory(torch_call, quantiles=QUANTILES)
-            print(f"Torch Peak Memory of {M,N,K} is {mem_50, mem_20, mem_80}")
-
-# peak_memory(backend = "triton")

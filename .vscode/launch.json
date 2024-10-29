@@ -38,11 +38,12 @@
     "configurations": [
         {
             "python": "/root/miniconda3/bin/python",
+            // "python": "/root/miniconda3/envs/exper/bin/python",
             "name": "Python: 当前文件",
             "type": "python",
             "cwd": "${workspaceFolder}/gemm/quantization/triton",
             "request": "launch",
-            "program": "w8a8/w8a8.py",
+            "program": "compare.py",
             "console": "integratedTerminal",
             "justMyCode": false,
             "args": [
