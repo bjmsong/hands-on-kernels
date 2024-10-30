@@ -122,30 +122,6 @@ def quant_matmul_248(
         return input @ W.t()
     return input @ W
 
-def make_tensor(M, N, dtype):
-    if dtype == torch.int32:
-        # Fill with random integers for int32 type
-        res = torch.randint(low=-2147483648, high=2147483647, size=(M, N), dtype=dtype, device="cuda")
-    else:
-        # Fill with normally distributed random values for other types
-        res = torch.empty((M, N), dtype=dtype, device="cuda")
-        res.normal_(mean=0.0, std=0.5)
-    return res
 
-if __name__ == '__main__':
 
-    m, k, n = 2048, 4096, 4096
-    x = make_tensor(m, k, dtype=torch.float16)   # activation 
-    w = make_tensor(k//8, n, dtype=torch.int32)  # weight, 8*int4 = int32
-
-    # w_float = scale * w_int - zero
-    groupsize = 128  # group quantization
-    g = k // groupsize
-    zeros = make_tensor(g, n//8, torch.int32)
-    scales = make_tensor(g, n, torch.float16)
-    bits = 4
-    maxq = 2**bits - 1
-    g_idx = torch.tensor([i // groupsize for i in range(n)], dtype=torch.int32, device="cuda")
-
-    quant_matmul_248(x, w, scales, zeros, g_idx, bits, maxq)
 
