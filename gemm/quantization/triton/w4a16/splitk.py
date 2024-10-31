@@ -2,6 +2,8 @@ import torch
 import triton
 from triton import language as tl
 # from actual_base_gptq_4 import triton_matmul4
+# import os
+# os.environ["TRITON_INTERPRET"]= "1"
 
 @triton.jit()
 def swizzle_tile(pid,
@@ -94,9 +96,9 @@ def matmul_split_k(x, w, scales, zeros):
     _, n = w.shape
     
     quant_groupsize = 128
-    block_m = 16
-    block_n = 32
-    block_k = 128
+    block_m = 128
+    block_n = 64
+    block_k = 32
     group_m = 8
     num_stages = 3
     num_warps = 4

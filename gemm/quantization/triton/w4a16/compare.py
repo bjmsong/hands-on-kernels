@@ -1,9 +1,10 @@
 import itertools
 import torch
 import triton
-from fused import quant_matmul_248 as quant_matmul_248_v1
-from dequant_only import quant_matmul_248 as quant_matmul_248_v2
-from optim import matmul_split_k
+from gptq_v1 import quant_matmul_248 as quant_matmul_248_v1
+from gptq_v2 import quant_matmul_248 as quant_matmul_248_v2
+from splitk import matmul_split_k
+torch.manual_seed(42)
 
 def make_tensor(M, N, dtype):
     if dtype == torch.int32:
@@ -15,11 +16,7 @@ def make_tensor(M, N, dtype):
         res.normal_(mean=0.0, std=0.5)
     return res
 
-# M_range = [2 ** i for i in range(10, 14, 2)]
-# N_K_range = [2 ** i for i in range(10, 12, 2)]
-M_range = [4096]
-N_K_range = [16384]
-matrix_range = list(itertools.product(M_range, N_K_range, N_K_range))
+matrix_range = [(256, 4096, 4096*4)]
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         x_names=['M', 'N', 'K'],  # Argument names to use as an x-axis for the plot
@@ -44,8 +41,12 @@ def benchmark(M, N, K, provider):
     scales = make_tensor(g, N, torch.float16)
     bits = 4
     maxq = 2**bits - 1
-    g_idx = torch.tensor([i // groupsize for i in range(N)], dtype=torch.int32, device="cuda")
+    g_idx = torch.tensor([i // groupsize for i in range(K)], dtype=torch.int32, device="cuda")
     quantiles = [0.5, 0.2, 0.8]
+    # g = torch.cuda.CUDAGraph()
+    # with torch.cuda.graph(g):
+    #     matmul_split_k(x, w, scales, zeros)
+
     if provider == 'v1':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: quant_matmul_248_v1(x, w, scales, zeros, g_idx, bits, maxq), quantiles=quantiles)
     if provider == 'v2':
@@ -67,7 +68,7 @@ if __name__ == '__main__':
     scales = make_tensor(g, n, torch.float16)
     bits = 4
     maxq = 2**bits - 1
-    g_idx = torch.tensor([i // groupsize for i in range(n)], dtype=torch.int32, device="cuda")
+    g_idx = torch.tensor([i // groupsize for i in range(k)], dtype=torch.int32, device="cuda")
 
     v1_output = quant_matmul_248_v1(x, w, scales, zeros, g_idx, bits, maxq)
     v2_output = quant_matmul_248_v2(x, w, scales, zeros, g_idx, bits, maxq)
