@@ -84,7 +84,7 @@ def matmul_split_k_kernel(a_ptr, b_ptr, c_ptr, scales_ptr, zeros_ptr,
         a_ptrs += block_k * split_k * stride_ak
         b_ptrs += (block_k // 8) * split_k * stride_bk
 
-    acc.to(tl.bfloat16)
+    acc.to(tl.float16)
 
     offs_m = pid_m*block_m + tl.arange(0, block_m)
     offs_n = pid_n*block_n + tl.arange(0, block_n)
@@ -120,7 +120,7 @@ def matmul_split_k(a, b, scales, zeros):
     print(f"total thread blocks k: {k}, total thread blocks m and total thread blocks n = {total_blocks_m=} x {total_blocks_n} = {total_programs_mn}")
     print(f"{total_programs_mn=}, {total_programs_k=}")
     
-    c = torch.zeros((m, n), device=a.device, dtype=torch.bfloat16)
+    c = torch.zeros((m, n), device=a.device, dtype=torch.float16)
     # triton.compiler.compiler.CompiledKernel
     k = matmul_split_k_kernel[grid](a, b, c, scales, zeros,
                               a.stride(0), a.stride(1),
@@ -161,12 +161,12 @@ def make_tensor(M, N, dtype):
 def calculate_diff():
     eps = 1e-3
     for M, N, K in matrix_range:
-        x = make_tensor(M, K, dtype=torch.bfloat16)
+        x = make_tensor(M, K, dtype=torch.float16)
         w = make_tensor(K//8, N, dtype=torch.int32)
         groupsize = 1
         g = K // groupsize
         zeros = make_tensor(g, N//8, torch.int32)
-        scales = make_tensor(g, N, torch.bfloat16)
+        scales = make_tensor(g, N, torch.float16)
         output_torch = torch.matmul(x, w.t())
         output_triton = matmul_split_k(x, w, scales, zeros)
         percentage_error = (torch.abs(output_torch - output_triton).to(torch.float64) / (eps + torch.abs(output_torch))) * 100
@@ -188,12 +188,12 @@ def calculate_diff():
         args={},
     ))
 def benchmark(M, N, K, provider):
-    x = make_tensor(M, K, dtype=torch.bfloat16)
+    x = make_tensor(M, K, dtype=torch.float16)
     w = make_tensor(K//8, N, dtype=torch.int32)
     groupsize = 1
     g = K // groupsize
     zeros = make_tensor(g, N//8, torch.int32)
-    scales = make_tensor(g, N, torch.bfloat16)
+    scales = make_tensor(g, N, torch.float16)
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'triton':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul_split_k(x, w, scales, zeros), quantiles=quantiles)
@@ -203,7 +203,8 @@ def benchmark(M, N, K, provider):
 if __name__ == '__main__':
 
     m, k, n = 16384, 4096, 8192
-    x = make_tensor(m, k, dtype=torch.bfloat16)   # activation 
+    # x(m,k) * w(k,n) = (m,n)
+    x = make_tensor(m, k, dtype=torch.float16)   # activation 
     # zeros, scales, w_int = quantize(w, zeros, scales)
     w = make_tensor(k//8, n, dtype=torch.int32)  # weight, 8*int4 = int32
 
@@ -211,7 +212,7 @@ if __name__ == '__main__':
     groupsize = 128  # group quantization
     g = k // groupsize
     zeros = make_tensor(g, n//8, torch.int32)
-    scales = make_tensor(g, n, torch.bfloat16)
+    scales = make_tensor(g, n, torch.float16)
 
     # base = no_autotune(groupsize, a, b, scales, zeros)
     # print(f"{base.shape=}, {base[0][0:4]}")
@@ -222,14 +223,15 @@ if __name__ == '__main__':
     split_k_output = matmul_split_k(x, w, scales, zeros)
     print(f"{split_k_output.shape=}, {split_k_output[0][0:4]}")
 
-    torch_output = torch.matmul(x, w.t())
-    print(f"triton_output={split_k_output}")
-    print(f"torch_output={torch_output}")
-    if torch.allclose(split_k_output, torch_output, atol=1e-2, rtol=1e-2):
-        print("✅ Triton and Torch match")
-    else:
-        print("❌ Triton and Torch differ")
+    # TODO: dequant w first
+    # torch_output = torch.matmul(x, w)
+    # print(f"triton_output={split_k_output}")
+    # print(f"torch_output={torch_output}")
+    # if torch.allclose(split_k_output, torch_output, atol=1e-2, rtol=1e-2):
+    #     print("✅ Triton and Torch match")
+    # else:
+    #     print("❌ Triton and Torch differ")
 
-    benchmark.run(show_plots=True, print_data=True, save_path="plot/")
+    # benchmark.run(show_plots=True, print_data=True, save_path="plot/")
 
-    calculate_diff()
+    # calculate_diff()

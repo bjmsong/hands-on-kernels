@@ -41,9 +41,9 @@
             // "python": "/root/miniconda3/envs/exper/bin/python",
             "name": "Python: 当前文件",
             "type": "python",
-            "cwd": "${workspaceFolder}/gemm/quantization/triton",
+            "cwd": "${workspaceFolder}/gemm/quantization/triton/w4a16",
             "request": "launch",
-            "program": "compare.py",
+            "program": "w4a16.py",
             "console": "integratedTerminal",
             "justMyCode": false,
             "args": [
